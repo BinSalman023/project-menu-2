@@ -1,212 +1,124 @@
-import React, { useState, useEffect } from 'react';
-import { X, Minus, Plus } from 'lucide-react';
-import { useLanguage } from '../LanguageContext';
+import React, { useState, useMemo } from 'react';
 
-export default function ProductDrawer({ isOpen, item, onClose, onAddToCart }) {
-    const { lang, t } = useLanguage();
-    const [quantity, setQuantity] = useState(1);
+export default function ProductDrawer({ item, lang, t, onClose, onAdd }) {
     const [selections, setSelections] = useState({});
     const [notes, setNotes] = useState('');
 
-    useEffect(() => {
-        if (isOpen && item) {
-            setQuantity(1);
-            setNotes('');
+    const groups = item.optionGroups || [];
 
-            const defaultSelections = {};
-            if (item.optionGroups) {
-                item.optionGroups.forEach(group => {
-                    if (group.options && group.options.length > 0) {
-                        defaultSelections[group.id] = group.options[0].id;
-                    }
-                });
-            }
-            setSelections(defaultSelections);
-        }
-    }, [isOpen, item]);
+    const requiredGroups = groups.filter(g => g.id !== 'adds');
+    const allRequiredSelected = requiredGroups.every(g => selections[g.id]);
 
-    if (!isOpen || !item) return null;
-
-    let unitPrice = item.price;
-    if (item.optionGroups) {
-        item.optionGroups.forEach(group => {
-            const selectedOptionId = selections[group.id];
-            const selectedOption = group.options.find(opt => opt.id === selectedOptionId);
-            if (selectedOption && selectedOption.price) {
-                unitPrice += selectedOption.price;
-            }
+    const totalPrice = useMemo(() => {
+        let total = item.price;
+        Object.values(selections).forEach(opt => {
+            if (opt?.price) total += opt.price;
         });
-    }
+        return total;
+    }, [selections, item.price]);
 
-    const totalPrice = unitPrice * quantity;
+    const handleSelect = (groupId, option) => {
+        setSelections(prev => ({ ...prev, [groupId]: option }));
+    };
 
-    const handleAddToCart = () => {
-        const formattedSelections = [];
-        if (item.optionGroups) {
-            item.optionGroups.forEach(group => {
-                const selectedOptionId = selections[group.id];
-                const selectedOption = group.options.find(opt => opt.id === selectedOptionId);
-                if (selectedOption) {
-                    formattedSelections.push({
-                        groupName: group.name,
-                        optionName: selectedOption.name,
-                        price: selectedOption.price
-                    });
-                }
-            });
+    const handleAdd = () => {
+        if (!allRequiredSelected && requiredGroups.length > 0) {
+            alert(t('selectItemsReq'));
+            return;
         }
-
-        onAddToCart({
-            ...item,
-            quantity,
-            totalPrice,
-            selections: formattedSelections,
-            notes
-        });
-        onClose();
+        onAdd(item, selections, notes);
     };
 
     return (
-        <>
-            <div
-                className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 transition-opacity"
-                onClick={onClose}
-            />
+        <div className="sheet-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+            <div className="bottom-sheet">
+                <div className="sheet-handle"><div className="handle-bar" /></div>
+                <button className="sheet-close" onClick={onClose}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                </button>
 
-            <div className="fixed bottom-0 left-0 right-0 max-h-[95vh] bg-[#0a0a0a] text-white rounded-t-[2.5rem] z-50 flex flex-col overflow-hidden animate-slide-up border-t border-white/10 max-w-2xl mx-auto shadow-[0_-20px_50px_rgba(0,0,0,0.5)]">
-                {/* Header Image */}
-                <div className="relative h-72 shrink-0 bg-[#121212]">
+                {item.image && (
                     <img
                         src={item.image}
-                        alt={item.name[lang]}
-                        className="absolute inset-0 w-full h-full object-cover opacity-80"
+                        alt={item.name?.[lang] || item.name?.ar}
+                        className="product-sheet-img"
+                        onError={e => { e.target.style.display = 'none'; }}
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0a] via-transparent to-transparent"></div>
-                    <button
-                        onClick={onClose}
-                        className="absolute top-6 right-6 h-12 w-12 glass-card rounded-full flex items-center justify-center text-white border-white/10 hover:bg-white/10 transition-all"
-                    >
-                        <X size={24} />
-                    </button>
+                )}
 
-                    <div className="absolute bottom-6 left-8 right-8">
-                        <div className="flex justify-between items-end">
-                            <div className="space-y-1">
-                                <h2 className="text-3xl font-black italic tracking-tighter uppercase">{item.name[lang]}</h2>
-                                <p className="text-xs text-gray-400 font-bold tracking-widest uppercase opacity-60">
-                                    {lang === 'ar' ? 'مذاق دمشقي أصيل' : 'AUTHENTIC TASTE'}
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Content */}
-                <div className="flex-1 overflow-y-auto px-8 pb-8 space-y-10">
-                    {/* Description */}
-                    <div className="pt-2">
-                        <p className="text-gray-400 text-sm leading-relaxed font-medium italic">
-                            "{item.description[lang]}"
-                        </p>
+                <div className="product-sheet-body">
+                    <div>
+                        <h2 className="product-sheet-title">{item.name?.[lang] || item.name?.ar}</h2>
+                        {item.description && (
+                            <p className="product-sheet-desc" style={{ marginTop: 6 }}>
+                                {item.description?.[lang] || item.description?.ar}
+                            </p>
+                        )}
                     </div>
 
-                    {/* Dynamic Option Groups */}
-                    {item.optionGroups && item.optionGroups.map((group) => (
-                        <div key={group.id} className="space-y-5">
-                            <div className="flex items-center gap-3">
-                                <div className="h-[1px] flex-1 bg-white/5"></div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-orange-500">
-                                    {group.name[lang]}
-                                </h4>
-                                <div className="h-[1px] flex-1 bg-white/5"></div>
-                            </div>
-                            <div className="grid grid-cols-1 gap-3">
-                                {group.options.map(option => (
-                                    <label
-                                        key={option.id}
-                                        className={`flex items-center justify-between p-4 rounded-2xl border transition-all cursor-pointer ${selections[group.id] === option.id
-                                                ? 'border-orange-500 bg-orange-500/10'
-                                                : 'border-white/5 bg-white/5 hover:bg-white/10'
-                                            }`}
-                                    >
-                                        <div className="flex items-center gap-4">
-                                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${selections[group.id] === option.id ? 'border-orange-500' : 'border-gray-600'
-                                                }`}>
-                                                {selections[group.id] === option.id && <div className="w-2 h-2 bg-orange-500 rounded-full" />}
+                    <p className="product-sheet-price">
+                        {totalPrice}
+                        <span className="currency">₺</span>
+                    </p>
+
+                    {groups.map(group => {
+                        const isRequired = group.id !== 'adds';
+                        return (
+                            <div key={group.id} className="option-group">
+                                <div className="option-group-header">
+                                    <p className="option-group-title">{group.name?.[lang] || group.name?.ar}</p>
+                                    <p className="option-group-subtitle">
+                                        {isRequired ? t('requiredOptions') : t('optionalAdds')}
+                                    </p>
+                                </div>
+                                {group.options.map(option => {
+                                    const isSelected = selections[group.id]?.id === option.id;
+                                    return (
+                                        <div
+                                            key={option.id}
+                                            className={`option-item${isSelected ? ' selected' : ''}`}
+                                            onClick={() => handleSelect(group.id, option)}
+                                        >
+                                            <div className="option-label">
+                                                <div className="option-radio">
+                                                    {isSelected && <div className="option-radio-dot" />}
+                                                </div>
+                                                <span className="option-name">{option.name?.[lang] || option.name?.ar}</span>
                                             </div>
-                                            <span className={`text-sm font-bold ${selections[group.id] === option.id ? 'text-white' : 'text-gray-400'}`}>
-                                                {option.name[lang]}
-                                            </span>
+                                            {option.price > 0 && (
+                                                <span className="option-extra">+{option.price} ₺</span>
+                                            )}
                                         </div>
-                                        <span className={`text-xs font-black italic ${selections[group.id] === option.id ? 'text-orange-500' : 'text-gray-500'}`}>
-                                            {option.price > 0 ? `+${option.price} ${t('currency')}` : ''}
-                                        </span>
-                                        <input
-                                            type="radio"
-                                            name={`group-${group.id}`}
-                                            className="hidden"
-                                            checked={selections[group.id] === option.id}
-                                            onChange={() => setSelections(prev => ({ ...prev, [group.id]: option.id }))}
-                                        />
-                                    </label>
-                                ))}
+                                    );
+                                })}
                             </div>
-                        </div>
-                    ))}
+                        );
+                    })}
 
-                    {/* Notes Field */}
-                    <div className="space-y-4">
-                        <div className="flex items-center gap-3">
-                            <div className="h-[1px] flex-1 bg-white/5"></div>
-                            <label htmlFor="notes" className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500">
-                                {t('notes')}
-                            </label>
-                            <div className="h-[1px] flex-1 bg-white/5"></div>
-                        </div>
+                    {/* Notes */}
+                    <div className="notes-section">
+                        <p className="notes-label">{t('notes')}</p>
                         <textarea
-                            id="notes"
-                            value={notes}
-                            onChange={(e) => setNotes(e.target.value)}
+                            className="notes-input"
                             placeholder={t('notesPlaceholder')}
-                            className="w-full bg-white/5 border border-white/5 rounded-2xl p-4 text-sm font-medium focus:border-orange-500/50 outline-none resize-none placeholder:text-gray-700"
-                            rows={3}
+                            value={notes}
+                            onChange={e => setNotes(e.target.value)}
                         />
                     </div>
-                </div>
 
-                {/* Footer fixed */}
-                <div className="p-6 glass-card border-t border-white/10 shadow-[0_-20px_50px_rgba(0,0,0,0.3)]">
-                    <div className="flex items-center justify-between mb-6 px-2">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">الكمية / QUANTITY</span>
-                        <div className="flex items-center gap-6 glass-card rounded-2xl px-3 py-2 border-white/5">
-                            <button
-                                onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                                className="h-10 w-10 rounded-xl bg-white/5 flex items-center justify-center text-white hover:bg-white/10 transition-colors disabled:opacity-20"
-                                disabled={quantity <= 1}
-                            >
-                                <Minus size={18} />
-                            </button>
-                            <span className="w-4 text-center text-lg font-black italic">{quantity}</span>
-                            <button
-                                onClick={() => setQuantity(quantity + 1)}
-                                className="h-10 w-10 rounded-xl bg-white/5 flex items-center justify-center text-white hover:bg-white/10 transition-colors"
-                            >
-                                <Plus size={18} />
-                            </button>
-                        </div>
-                    </div>
+                    {/* Add to Cart */}
                     <button
-                        onClick={handleAddToCart}
-                        className="w-full h-16 bg-orange-500 text-black rounded-2xl font-black italic flex items-center justify-between px-8 hover:bg-orange-400 active:scale-[0.98] transition-all shadow-2xl shadow-orange-500/20"
+                        className="add-to-cart-btn"
+                        onClick={handleAdd}
+                        disabled={!allRequiredSelected && requiredGroups.length > 0}
                     >
-                        <span className="uppercase tracking-tighter text-lg">{t('addToCart')}</span>
-                        <div className="flex items-center gap-2">
-                            <span className="text-xl">{totalPrice}</span>
-                            <span className="text-xs font-bold uppercase">{t('currency')}</span>
-                        </div>
+                        <span>{t('addToCart')}</span>
+                        <span className="btn-price-badge">{totalPrice} ₺</span>
                     </button>
                 </div>
             </div>
-        </>
+        </div>
     );
 }

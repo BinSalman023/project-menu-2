@@ -1,277 +1,384 @@
-import React, { useState, useEffect } from 'react';
-import { ShoppingBag, ChevronRight, Plus, Search, Globe, LayoutGrid, List, Info } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import { useLanguage } from './LanguageContext';
+import { MENU_CATEGORIES, MENU_ITEMS } from './data';
 import ProductDrawer from './components/ProductDrawer';
 import CheckoutDrawer from './components/CheckoutDrawer';
-import { MENU_CATEGORIES, MENU_ITEMS } from './data';
-import { useLanguage } from './LanguageContext';
+
+// Fix leaflet marker icons
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
+
+const RESTAURANT_COORDS = [41.00134562745214, 28.8420208];
+
+function calcDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function calcDeliveryFee(distKm) {
+  const raw = distKm * 20;
+  return Math.ceil(raw / 5) * 5;
+}
+
+const LANGS = [
+  { code: 'ar', label: 'العربية', flag: '🇸🇦' },
+  { code: 'tr', label: 'Türkçe', flag: '🇹🇷' },
+  { code: 'en', label: 'English', flag: '🇬🇧' },
+];
+
+// ─── Map Click Handler ─────────────────────────────────────
+function MapClickHandler({ onLocationSelect }) {
+  useMapEvents({ click: (e) => onLocationSelect(e.latlng) });
+  return null;
+}
 
 export default function App() {
   const { lang, setLang, t } = useLanguage();
+  const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState(MENU_CATEGORIES[0].id);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [cartOpen, setCartOpen] = useState(false);
   const [cart, setCart] = useState([]);
-  const [selectedProduct, setSelectedProduct] = useState(null);
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
-  const [isLangOpen, setIsLangOpen] = useState(false);
-  const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
+  const [langMenuOpen, setLangMenuOpen] = useState(false);
+  const [deliveryLocation, setDeliveryLocation] = useState(null);
+  const [deliveryFee, setDeliveryFee] = useState(0);
+  const [customerName, setCustomerName] = useState('');
+  const [buildingNo, setBuildingNo] = useState('');
+  const [flatNo, setFlatNo] = useState('');
+  const [geoLoading, setGeoLoading] = useState(false);
+  const langRef = useRef(null);
+  const sectionRefs = useRef({});
 
-  const handleLanguageChange = (newLang) => {
-    setLang(newLang);
-    setIsLangOpen(false);
-  };
+  // close lang menu on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (langRef.current && !langRef.current.contains(e.target)) {
+        setLangMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
-  const scrollToCategory = (id) => {
-    setActiveCategory(id);
-    const element = document.getElementById(id);
-    if (element) {
-      const offset = 100;
-      const bodyRect = document.body.getBoundingClientRect().top;
-      const elementRect = element.getBoundingClientRect().top;
-      const elementPosition = elementRect - bodyRect;
-      const offsetPosition = elementPosition - offset;
-
-      window.scrollTo({
-        top: offsetPosition,
-        behavior: "smooth"
-      });
+  // Scroll spy for category highlight
+  const handleScroll = useCallback(() => {
+    const scrollY = window.scrollY + 150;
+    for (const catId of Object.keys(sectionRefs.current)) {
+      const el = sectionRefs.current[catId];
+      if (el && el.offsetTop <= scrollY) setActiveCategory(catId);
     }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [handleScroll]);
+
+  const scrollToCategory = (catId) => {
+    const el = sectionRefs.current[catId];
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const handleProductClick = (product) => {
-    setSelectedProduct(product);
-    setIsDrawerOpen(true);
+  // Cart Logic
+  const addToCart = (item, options, notes) => {
+    const id = `${item.id}-${Date.now()}`;
+    setCart(prev => [...prev, { id, item, options, notes, qty: 1 }]);
+    setSelectedItem(null);
   };
 
-  const handleAddToCart = (cartItem) => {
-    setCart(prev => [...prev, cartItem]);
+  const changeQty = (cartId, delta) => {
+    setCart(prev => prev
+      .map(c => c.id === cartId ? { ...c, qty: c.qty + delta } : c)
+      .filter(c => c.qty > 0)
+    );
   };
 
-  const cartTotal = cart.reduce((sum, item) => sum + item.totalPrice, 0);
-  const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const cartItemCount = cart.reduce((a, c) => a + c.qty, 0);
 
-  const filteredItems = MENU_ITEMS.filter(item => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    const name = item.name[lang] || '';
-    const desc = item.description[lang] || '';
-    return name.toLowerCase().includes(query) || desc.toLowerCase().includes(query);
-  });
+  const getItemTotal = (c) => {
+    const base = c.item.price;
+    const opts = Object.values(c.options || {}).reduce((sum, o) => sum + (o?.price || 0), 0);
+    return (base + opts) * c.qty;
+  };
+
+  const subtotal = cart.reduce((sum, c) => sum + getItemTotal(c), 0);
+  const total = subtotal + deliveryFee;
+
+  // Delivery
+  const handleLocationSelect = (latlng) => {
+    const dist = calcDistance(RESTAURANT_COORDS[0], RESTAURANT_COORDS[1], latlng.lat, latlng.lng);
+    setDeliveryLocation(latlng);
+    setDeliveryFee(calcDeliveryFee(dist));
+  };
+
+  const detectLocation = () => {
+    if (!navigator.geolocation) return;
+    setGeoLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const latlng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        handleLocationSelect(latlng);
+        setGeoLoading(false);
+      },
+      () => setGeoLoading(false)
+    );
+  };
+
+  // Filter items by search
+  const filterItems = (items) => {
+    if (!search.trim()) return items;
+    const q = search.toLowerCase();
+    return items.filter(item => {
+      const n = item.name?.[lang] || item.name?.ar || '';
+      return n.toLowerCase().includes(q);
+    });
+  };
+
+  // WhatsApp Order
+  const sendWhatsApp = () => {
+    const lines = [];
+    lines.push(`🏰 *مطعم قلعة الشام*`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`🛒 *الطلب:*`);
+    cart.forEach(c => {
+      lines.push(`• ${c.item.name?.ar} × ${c.qty} — ${getItemTotal(c)} ₺`);
+      const mods = Object.values(c.options || {}).filter(o => o).map(o => o.name?.ar).join(', ');
+      if (mods) lines.push(`  ↳ ${mods}`);
+      if (c.notes) lines.push(`  📝 ${c.notes}`);
+    });
+    lines.push(`━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`💰 *المجموع الفرعي:* ${subtotal} ₺`);
+    lines.push(`🚗 *رسوم التوصيل:* ${deliveryFee} ₺`);
+    lines.push(`🔢 *الإجمالي:* ${total} ₺`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`👤 *بيانات العميل:*`);
+    if (customerName) lines.push(`الاسم: ${customerName}`);
+    if (buildingNo) lines.push(`رقم البناية: ${buildingNo}`);
+    if (flatNo) lines.push(`رقم الشقة: ${flatNo}`);
+    if (deliveryLocation) lines.push(`📍 الموقع: https://maps.google.com/?q=${deliveryLocation.lat},${deliveryLocation.lng}`);
+    const msg = encodeURIComponent(lines.join('\n'));
+    window.open(`https://wa.me/?text=${msg}`, '_blank');
+  };
+
+  // Filtered categories
+  const searchActive = search.trim().length > 0;
 
   return (
-    <div className={`min-h-screen pb-32 bg-[#050505] text-white selection:bg-orange-500 selection:text-white ${lang === 'ar' ? 'rtl' : 'ltr'}`}>
+    <div className="app-shell">
 
-      {/* Dynamic Background Blur */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-orange-500/10 blur-[120px] rounded-full"></div>
-        <div className="absolute bottom-[20%] right-[-10%] w-[30%] h-[30%] bg-orange-600/5 blur-[100px] rounded-full"></div>
-      </div>
-
-      {/* Modern Top Header */}
-      <header className="relative z-50 px-6 pt-8 pb-4 max-w-4xl mx-auto flex justify-between items-center">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-white rounded-2xl p-1.5 shadow-2xl flex items-center justify-center">
-            <img src="/images/logo-Qalaat-Al-Sham.png" alt="Logo" className="w-full h-full object-contain" />
+      {/* ── Top Bar ── */}
+      <header className="top-bar">
+        <div className="top-bar-inner">
+          <div className="brand-block">
+            <img
+              src="/images/logo-Qalaat-Al-Sham.png"
+              alt="قلعة الشام"
+              className="brand-logo"
+              onError={e => { e.target.style.display = 'none'; }}
+            />
+            <span className="brand-name">قلعة الشام</span>
           </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">
-              {lang === 'ar' ? 'قلعة الشام' : 'Qalaat Al-Sham'}
-            </h1>
-            <div className="flex items-center gap-2 mt-0.5">
-              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-              <span className="text-[10px] text-gray-400 uppercase tracking-widest font-semibold">{t('openNow') || 'Open Now'}</span>
-            </div>
+
+          <div className="search-wrap">
+            <span className="search-icon">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+              </svg>
+            </span>
+            <input
+              className="search-input"
+              placeholder={t('searchPlaceholder')}
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
           </div>
-        </div>
 
-        <div className="relative">
-          <button
-            onClick={() => setIsLangOpen(!isLangOpen)}
-            className="w-10 h-10 rounded-full glass-card flex items-center justify-center hover:bg-white/10 transition-all border-white/5"
-          >
-            <Globe size={18} className="text-gray-300" />
-          </button>
-          {isLangOpen && (
-            <div className={`absolute top-full mt-3 ${lang === 'ar' ? 'left-0' : 'right-0'} bg-[#121212] rounded-2xl shadow-2xl w-40 border border-white/10 overflow-hidden z-[100] animate-slide-up`}>
-              {[{ id: 'ar', label: 'العربية' }, { id: 'tr', label: 'Türkçe' }, { id: 'en', label: 'English' }].map((l) => (
-                <button
-                  key={l.id}
-                  onClick={() => handleLanguageChange(l.id)}
-                  className={`w-full text-left px-5 py-4 text-sm font-medium transition-colors hover:bg-white/5 ${lang === l.id ? 'text-orange-500' : 'text-gray-400'}`}
-                >
-                  {l.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </header>
-
-      {/* Main Content Area */}
-      <main className="relative z-10 px-6 max-w-4xl mx-auto">
-
-        {/* Sleek Search Container */}
-        <div className="mt-6 mb-10">
-          <div className="relative group">
-            <div className="absolute inset-0 bg-orange-500/5 blur-2xl rounded-3xl opacity-0 group-focus-within:opacity-100 transition-opacity"></div>
-            <div className="relative glass-card rounded-2xl flex items-center px-5 h-14 border-white/10 focus-within:border-orange-500/30 transition-all">
-              <Search size={20} className="text-gray-500" />
-              <input
-                type="text"
-                placeholder={t('searchPlaceholder')}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-transparent border-none outline-none flex-1 px-4 text-sm font-medium placeholder:text-gray-600"
-              />
-              <div className="flex items-center gap-2 border-l border-white/10 pl-4 h-6">
-                <button onClick={() => setViewMode('grid')} className={`p-1 transition-colors ${viewMode === 'grid' ? 'text-orange-500' : 'text-gray-600'}`}>
-                  <LayoutGrid size={18} />
-                </button>
-                <button onClick={() => setViewMode('list')} className={`p-1 transition-colors ${viewMode === 'list' ? 'text-orange-500' : 'text-gray-600'}`}>
-                  <List size={18} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Categories (Static Header on Project 2 or Bottom fixed?) Let's do a top scroll too */}
-        {!searchQuery && (
-          <nav className="mb-12 overflow-x-auto hide-scrollbar">
-            <div className="flex gap-3 px-1">
-              {MENU_CATEGORIES.map(category => (
-                <button
-                  key={category.id}
-                  onClick={() => scrollToCategory(category.id)}
-                  className={`px-6 py-3 rounded-full text-xs font-bold tracking-wider whitespace-nowrap transition-all border ${activeCategory === category.id
-                      ? 'bg-orange-500 border-orange-500 text-black shadow-lg shadow-orange-500/20'
-                      : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10'
-                    }`}
-                >
-                  {category.label[lang].toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </nav>
-        )}
-
-        {/* Menu Items */}
-        <div className="space-y-16">
-          {searchQuery ? (
-            <div className={viewMode === 'grid' ? "grid grid-cols-2 gap-4" : "space-y-4"}>
-              {filteredItems.map(item => (
-                <MenuCard key={item.id} item={item} lang={lang} t={t} mode={viewMode} onClick={() => handleProductClick(item)} />
-              ))}
-            </div>
-          ) : (
-            MENU_CATEGORIES.map(category => {
-              const items = filteredItems.filter(i => i.categoryId === category.id);
-              if (items.length === 0) return null;
-              return (
-                <section key={category.id} id={category.id} className="scroll-mt-24">
-                  <div className="flex items-baseline justify-between mb-8 border-b border-white/5 pb-4">
-                    <h2 className="text-2xl font-black italic tracking-tighter uppercase">{category.label[lang]}</h2>
-                    <span className="text-[10px] font-bold text-gray-500 tracking-[0.2em]">{items.length} {t('items') || 'ITEMS'}</span>
-                  </div>
-                  <div className={viewMode === 'grid' ? "grid grid-cols-2 gap-x-4 gap-y-8" : "space-y-4"}>
-                    {items.map(item => (
-                      <MenuCard key={item.id} item={item} lang={lang} t={t} mode={viewMode} onClick={() => handleProductClick(item)} />
-                    ))}
-                  </div>
-                </section>
-              );
-            })
-          )}
-        </div>
-      </main>
-
-      {/* Floating Bottom Nav / Action Area */}
-      <footer className="fixed bottom-6 left-6 right-6 z-50 flex justify-center pointer-events-none">
-        <div className="glass-card rounded-[2rem] px-2 py-2 flex items-center gap-2 pointer-events-auto shadow-2xl border-white/10 max-w-md w-full">
-          <div className="flex-1 flex px-4">
-            {cartItemCount > 0 ? (
-              <button
-                onClick={() => setIsCheckoutOpen(true)}
-                className="flex items-center gap-4 w-full"
-              >
-                <div className="w-12 h-12 bg-orange-500 rounded-2xl flex items-center justify-center shadow-lg shadow-orange-500/20">
-                  <ShoppingBag size={22} className="text-black" />
-                </div>
-                <div className="flex flex-col items-start translate-y-[1px]">
-                  <span className="text-xs font-black tracking-widest text-orange-500 uppercase">{t('viewOrder')}</span>
-                  <span className="text-lg font-bold leading-none">{cartTotal} <span className="text-xs font-normal opacity-60 ml-1">{t('currency')}</span></span>
-                </div>
-              </button>
-            ) : (
-              <div className="flex items-center gap-4 opacity-40 py-3">
-                <ShoppingBag size={20} />
-                <span className="text-sm font-bold tracking-wide uppercase">{t('cartEmpty')}</span>
+          <div style={{ position: 'relative' }} ref={langRef}>
+            <button className="lang-toggle-btn" onClick={() => setLangMenuOpen(p => !p)}>
+              {lang.toUpperCase()}
+            </button>
+            {langMenuOpen && (
+              <div className="lang-menu">
+                {LANGS.map(l => (
+                  <button
+                    key={l.code}
+                    className={`lang-menu-item${lang === l.code ? ' active' : ''}`}
+                    onClick={() => { setLang(l.code); setLangMenuOpen(false); }}
+                  >
+                    <span className="flag">{l.flag}</span>
+                    {l.label}
+                  </button>
+                ))}
               </div>
             )}
           </div>
-          {cartItemCount > 0 && (
-            <button
-              onClick={() => setIsCheckoutOpen(true)}
-              className="w-12 h-12 rounded-2xl bg-white flex items-center justify-center text-black hover:scale-105 transition-transform"
-            >
-              <ChevronRight size={24} />
-            </button>
-          )}
         </div>
-      </footer>
+      </header>
 
-      {/* Modals - Keeping core logic intact */}
-      <ProductDrawer isOpen={isDrawerOpen} item={selectedProduct} onClose={() => setIsDrawerOpen(false)} onAddToCart={handleAddToCart} />
-      <CheckoutDrawer isOpen={isCheckoutOpen} onClose={() => setIsCheckoutOpen(false)} cart={cart} onClearCart={() => setCart([])} />
-    </div>
-  );
-}
-
-function MenuCard({ item, lang, t, onClick, mode }) {
-  if (mode === 'grid') {
-    return (
-      <article onClick={onClick} className="group cursor-pointer">
-        <div className="relative aspect-[4/5] rounded-[2rem] overflow-hidden mb-4 bg-[#121212] border border-white/5 transition-all group-hover:border-orange-500/30">
+      {/* ── Hero ── */}
+      {!searchActive && (
+        <div className="hero">
           <img
-            src={item.image}
-            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110 opacity-80 group-hover:opacity-100"
-            loading="lazy"
+            src="/images/arabic-shawarma-meal.png"
+            alt="قلعة الشام"
+            className="hero-img"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-60 group-hover:opacity-40 transition-opacity"></div>
-          <div className="absolute bottom-4 left-4 right-4 flex justify-between items-end">
-            <div className="bg-orange-500 text-black px-3 py-1 rounded-lg text-sm font-black italic">
-              {item.price}
+          <div className="hero-gradient" />
+          <div className="hero-content">
+            <div className="hero-info">
+              <h1 className="hero-title">مطعم قلعة الشام</h1>
+              <p className="hero-subtitle">شاورما · غربي · شرقي · مشاوي</p>
             </div>
-            <button className="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-md border border-white/10 flex items-center justify-center text-white translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all">
-              <Plus size={20} />
-            </button>
+            <span className="hero-badge">🕐 30–45 دقيقة</span>
           </div>
         </div>
-        <h3 className="text-sm font-bold tracking-wide px-1 line-clamp-1 group-hover:text-orange-500 transition-colors">{item.name[lang]}</h3>
-        <p className="text-[10px] text-gray-500 mt-1 px-1 line-clamp-1 opacity-60 uppercase tracking-widest leading-tight">{item.description[lang]}</p>
-      </article>
-    );
-  }
+      )}
 
-  return (
-    <article
-      onClick={onClick}
-      className="glass-card p-4 rounded-2xl flex gap-4 group cursor-pointer border-white/5 hover:border-orange-500/20 transition-all"
-    >
-      <div className="w-20 h-20 rounded-xl overflow-hidden bg-[#121212] border border-white/5 shrink-0">
-        <img src={item.image} className="w-full h-full object-cover opacity-80 group-hover:scale-110 transition-transform duration-500" />
-      </div>
-      <div className="flex-1 flex flex-col justify-center min-w-0">
-        <div className="flex justify-between items-start gap-2">
-          <h3 className="text-sm font-bold tracking-wide truncate">{item.name[lang]}</h3>
-          <span className="text-sm font-black text-orange-500">{item.price} <span className="text-[10px] font-normal opacity-50 uppercase">{t('currency')}</span></span>
+      {/* ── Category Pills ── */}
+      {!searchActive && (
+        <div className="cat-strip-wrap">
+          <div className="cat-strip">
+            {MENU_CATEGORIES.map(cat => (
+              <button
+                key={cat.id}
+                className={`cat-pill${activeCategory === cat.id ? ' active' : ''}`}
+                onClick={() => scrollToCategory(cat.id)}
+              >
+                {cat.label[lang] || cat.label.ar}
+              </button>
+            ))}
+          </div>
         </div>
-        <p className="text-xs text-gray-500 mt-1 line-clamp-1 opacity-70 italic">"{item.description[lang]}"</p>
-        <div className="flex items-center gap-2 mt-2">
-          <div className="px-2 py-0.5 rounded bg-white/5 text-[9px] font-bold text-gray-400 uppercase tracking-tighter">دمشقي</div>
-          <div className="px-2 py-0.5 rounded bg-white/5 text-[9px] font-bold text-gray-400 uppercase tracking-tighter">طازج</div>
+      )}
+
+      {/* ── Menu Content ── */}
+      <main className="menu-content">
+        {MENU_CATEGORIES.map(cat => {
+          const items = filterItems(MENU_ITEMS.filter(i => i.categoryId === cat.id));
+          if (items.length === 0) return null;
+          return (
+            <section
+              key={cat.id}
+              className="category-section"
+              ref={el => { sectionRefs.current[cat.id] = el; }}
+            >
+              <div className="section-header">
+                <h2 className="section-title">{cat.label[lang] || cat.label.ar}</h2>
+                <span className="section-count">{items.length}</span>
+                <div className="section-divider" />
+              </div>
+
+              <div className="items-grid">
+                {items.map(item => (
+                  <article
+                    key={item.id}
+                    className="menu-card"
+                    onClick={() => setSelectedItem(item)}
+                  >
+                    <div className="card-img-wrap">
+                      {item.image ? (
+                        <img
+                          src={item.image}
+                          alt={item.name?.[lang] || item.name?.ar}
+                          className="card-img"
+                          onError={e => {
+                            e.target.style.display = 'none';
+                            e.target.nextSibling.style.display = 'flex';
+                          }}
+                        />
+                      ) : null}
+                      <div className="card-img-placeholder" style={{ display: item.image ? 'none' : 'flex' }}>🍽️</div>
+                    </div>
+                    <div className="card-body">
+                      <p className="card-name">{item.name?.[lang] || item.name?.ar}</p>
+                      {item.description && (
+                        <p className="card-desc">{item.description?.[lang] || item.description?.ar}</p>
+                      )}
+                      <div className="card-footer">
+                        <span className="card-price">
+                          {item.price}
+                          <span>₺</span>
+                        </span>
+                        <span className="add-btn" aria-label="إضافة">＋</span>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+
+        {searchActive && MENU_CATEGORIES.every(cat =>
+          filterItems(MENU_ITEMS.filter(i => i.categoryId === cat.id)).length === 0
+        ) && (
+            <p className="no-items-found">لا توجد نتائج لـ "{search}"</p>
+          )}
+      </main>
+
+      {/* ── Floating Cart FAB ── */}
+      {cartItemCount > 0 && (
+        <div className="cart-fab">
+          <button className="cart-fab-inner" onClick={() => setCartOpen(true)}>
+            <div className="fab-left">
+              <span className="fab-badge">{cartItemCount}</span>
+              <span className="fab-label">{t('viewOrder')}</span>
+            </div>
+            <span className="fab-total">{subtotal} ₺</span>
+          </button>
         </div>
-      </div>
-    </article>
+      )}
+
+      {/* ── Product Drawer ── */}
+      {selectedItem && (
+        <ProductDrawer
+          item={selectedItem}
+          lang={lang}
+          t={t}
+          onClose={() => setSelectedItem(null)}
+          onAdd={addToCart}
+        />
+      )}
+
+      {/* ── Cart / Checkout Drawer ── */}
+      {cartOpen && (
+        <CheckoutDrawer
+          cart={cart}
+          lang={lang}
+          t={t}
+          onClose={() => setCartOpen(false)}
+          onChangeQty={changeQty}
+          getItemTotal={getItemTotal}
+          subtotal={subtotal}
+          deliveryFee={deliveryFee}
+          total={total}
+          deliveryLocation={deliveryLocation}
+          onLocationSelect={handleLocationSelect}
+          onDetectLocation={detectLocation}
+          geoLoading={geoLoading}
+          customerName={customerName}
+          setCustomerName={setCustomerName}
+          buildingNo={buildingNo}
+          setBuildingNo={setBuildingNo}
+          flatNo={flatNo}
+          setFlatNo={setFlatNo}
+          onConfirm={sendWhatsApp}
+          RESTAURANT_COORDS={RESTAURANT_COORDS}
+          MapClickHandler={MapClickHandler}
+        />
+      )}
+    </div>
   );
 }
